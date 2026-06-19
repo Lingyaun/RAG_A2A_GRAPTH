@@ -2,7 +2,7 @@
 #define RAG_EMBEDDER_NODE_H
 
 #include "../RAGCommon.h"
-#include "EmbeddingClient.h"
+#include <EmbeddingClient.h>
 #include <random>
 #include <memory>
 

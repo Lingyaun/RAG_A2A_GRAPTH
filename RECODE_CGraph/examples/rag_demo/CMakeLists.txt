@@ -6,6 +6,7 @@ file(GLOB_RECURSE CGRAPH_SRC "../../src/*.cpp")
 include_directories(../..)
 # libcurl + nlohmann/json 头文件来自 A2A SDK 的 third_party
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../a2a-cpp-sdk-main/a2a-cpp-sdk-main/third_party)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../a2a-cpp-sdk-main/a2a-cpp-sdk-main/examples/rag_agents)
 
 add_executable(build_index build_index.cpp ${CGRAPH_SRC})
 add_executable(query query.cpp ${CGRAPH_SRC})
