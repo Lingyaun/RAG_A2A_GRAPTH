@@ -14,3 +14,6 @@ Makefile
 # IDE
 .vs/
 .vscode/
+
+# Knowledge folder (summaries, notes)
+.knowledge/
