@@ -1,6 +1,14 @@
 #ifndef RAG_EMBEDDING_CLIENT_H
 #define RAG_EMBEDDING_CLIENT_H
 
+// ★ 替换为你的 DashScope API Key，或留空由环境变量 DASHSCOPE_API_KEY 设置
+//   编译时: cmake -DDASHSCOPE_API_KEY="sk-xxx" ..
+//   运行时: $env:DASHSCOPE_API_KEY="sk-xxx"; ./build_index.exe ...
+//   留空则自动回退到 mock embedding
+#ifndef DASHSCOPE_API_KEY
+#define DASHSCOPE_API_KEY ""    // <-- 在这里填入你的 API Key
+#endif
+
 #include <string>
 #include <vector>
 #include <curl/curl.h>
@@ -33,8 +41,14 @@ public:
         if (!api_key.empty()) {
             api_key_ = api_key;
         } else {
-            const char* env_key = std::getenv("DASHSCOPE_API_KEY");
-            api_key_ = env_key ? std::string(env_key) : "";
+            // 优先级：编译期宏 DASHSCOPE_API_KEY > 环境变量
+            std::string def_key(DASHSCOPE_API_KEY);
+            if (!def_key.empty()) {
+                api_key_ = def_key;
+            } else {
+                const char* env_key = std::getenv("DASHSCOPE_API_KEY");
+                api_key_ = env_key ? std::string(env_key) : "";
+            }
         }
         curl_global_init(CURL_GLOBAL_DEFAULT);
     }

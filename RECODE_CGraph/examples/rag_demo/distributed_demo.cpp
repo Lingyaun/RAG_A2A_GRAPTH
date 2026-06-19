@@ -12,6 +12,7 @@
 #include "nodes/DocLoaderNode.h"
 #include "nodes/ChunkerNode.h"
 #include "nodes/EmbedderNode.h"
+#include <EmbeddingClient.h>
 #include "nodes/QuerySetupNode.h"
 #include "nodes/QueryDecomposerNode.h"
 #include "nodes/VectorSearchNode.h"
@@ -101,6 +102,8 @@ int main(int argc, char* argv[]){
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
+
+    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
     std::string q; std::vector<std::string> files;
     for(int i=1;i<argc;++i){
         std::string a(argv[i]);

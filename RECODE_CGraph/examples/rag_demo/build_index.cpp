@@ -8,6 +8,7 @@
 #include "nodes/DocLoaderNode.h"
 #include "nodes/ChunkerNode.h"
 #include "nodes/EmbedderNode.h"
+#include <EmbeddingClient.h>
 
 #include <string>
 #include <vector>
@@ -30,6 +31,9 @@ int main(int argc, char* argv[]) {
     }
 
     CGRAPH_ECHO("[RAG] ======== build_index: %zu files ========", file_paths.size());
+
+    // 注入 EmbeddingClient（有 key 走真实 API，无 key 自动回退 mock）
+    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
     GElementPtr loader  = nullptr;

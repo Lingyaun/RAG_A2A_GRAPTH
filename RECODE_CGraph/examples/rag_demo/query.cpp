@@ -7,6 +7,7 @@
 #include "RAGCommon.h"
 #include "nodes/QuerySetupNode.h"
 #include "nodes/EmbedderNode.h"
+#include <EmbeddingClient.h>
 #include "nodes/VectorSearchNode.h"
 #include "nodes/LLMGeneratorNode.h"
 #include <string>
@@ -32,6 +33,8 @@ int main(int argc, char* argv[]) {
     }
 
     CGRAPH_ECHO("[RAG] ======== query ========");
+
+    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
     GElementPtr setup, embed, search, generate;

@@ -9,6 +9,7 @@
 #include "nodes/DocLoaderNode.h"
 #include "nodes/ChunkerNode.h"
 #include "nodes/EmbedderNode.h"
+#include <EmbeddingClient.h>
 #include "nodes/QuerySetupNode.h"
 #include "nodes/VectorSearchNode.h"
 #include "nodes/LLMGeneratorNode.h"
@@ -49,6 +50,8 @@ int main(int argc, char* argv[]) {
     CGRAPH_ECHO("[RAG] Demo: %zu file(s), query: %s",
                 file_paths.size(), question.c_str());
     CGRAPH_ECHO("[RAG] ============================================");
+
+    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     // ---- 构建 DAG ----
     GPipelinePtr pipeline = GPipelineFactory::create();

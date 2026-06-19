@@ -8,6 +8,7 @@
 #include "nodes/DocLoaderNode.h"
 #include "nodes/ChunkerNode.h"
 #include "nodes/EmbedderNode.h"
+#include <EmbeddingClient.h>
 #include "nodes/QuerySetupNode.h"
 #include "nodes/QueryDecomposerNode.h"
 #include "nodes/VectorSearchNode.h"
@@ -117,6 +118,8 @@ int main(int argc, char* argv[]){
     SetConsoleOutputCP(CP_UTF8);
 #endif
     std::srand((unsigned)std::chrono::system_clock::now().time_since_epoch().count());
+
+    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     int runs=5;
     std::vector<std::string> files;
