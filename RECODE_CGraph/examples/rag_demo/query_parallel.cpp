@@ -51,7 +51,7 @@ int main(int argc, char* argv[]) {
     CGRAPH_ECHO("[RAG] Query: %s", question.c_str());
     CGRAPH_ECHO("[RAG] ============================================");
 
-    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
 

@@ -7,7 +7,10 @@
 
 // ============================================================
 // LLMGeneratorNode - 拼接 Context + 构造 Prompt
-// Phase1: 存 prompt 文本; Phase2: 替换为 LLM API 调用
+//
+// Phase 6 扩展：优先使用 parent_chunks（父段落）作为上下文
+// 如果 parent_chunks 为空，回退到 fused_results (small chunks)
+// 确保 LLM 收到的是完整段落而非碎片化句子
 // ============================================================
 class LLMGeneratorNode : public GNode {
 public:
@@ -18,11 +21,23 @@ public:
         if (!p) return STATUS_ERR;
 
         std::vector<std::pair<int, float>> selected;
+        std::vector<std::string> src_chunks;  // 用于获取原文
+        std::string chunk_type;
+
         {
             CGRAPH_PARAM_READ_REGION(p) {
-                if (!p->fused_results.empty()) {
+                // Phase 6: 优先使用 parent_chunks（父段落）
+                if (!p->parent_chunks.empty()) {
+                    selected = p->parent_chunks;
+                    src_chunks = p->chunks_large;
+                    chunk_type = "parent_paragraphs";
+                } else if (!p->fused_results.empty()) {
+                    // 回退: 使用 fused_results (small chunks)
                     selected = p->fused_results;
+                    src_chunks = p->chunks_small.empty() ? p->chunks : p->chunks_small;
+                    chunk_type = "small_chunks";
                 } else {
+                    // 最终回退: 从 top_k 中合并
                     std::map<int, float> merged;
                     for (auto& track : p->top_k) {
                         for (auto& kv : track) {
@@ -34,6 +49,8 @@ public:
                     std::sort(selected.begin(), selected.end(),
                         [](auto& a, auto& b) { return a.second > b.second; });
                     if (selected.size() > 5) selected.resize(5);
+                    src_chunks = p->chunks_small.empty() ? p->chunks : p->chunks_small;
+                    chunk_type = "fallback_merged";
                 }
             }
         }
@@ -44,10 +61,10 @@ public:
             CGRAPH_PARAM_READ_REGION(p) {
                 for (size_t i = 0; i < selected.size(); ++i) {
                     int idx = selected[i].first;
-                    if (idx >= 0 && idx < (int)p->chunks.size()) {
-                        ctx << "[Chunk" << idx << "|score="
-                            << selected[i].second << "]\n"
-                            << p->chunks[idx] << "\n\n";
+                    if (idx >= 0 && idx < (int)src_chunks.size()) {
+                        ctx << "[" << chunk_type << " " << idx
+                            << " | score=" << selected[i].second << "]\n"
+                            << src_chunks[idx] << "\n\n";
                     }
                 }
                 q = p->query;
@@ -61,8 +78,8 @@ public:
             "Question: " + q + "\n\nAnswer:";
 
         CGRAPH_PARAM_WRITE_REGION(p) { p->answer = prompt; }
-        CGRAPH_ECHO("[RAG] Generator: prompt %zu chars, %zu chunks",
-                    prompt.size(), selected.size());
+        CGRAPH_ECHO("[RAG] Generator: prompt %zu chars, %zu %s",
+                    prompt.size(), selected.size(), chunk_type.c_str());
         return STATUS_OK;
     }
 };

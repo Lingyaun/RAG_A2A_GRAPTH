@@ -51,7 +51,7 @@ int main(int argc, char* argv[]) {
                 file_paths.size(), question.c_str());
     CGRAPH_ECHO("[RAG] ============================================");
 
-    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     // ---- 构建 DAG ----
     GPipelinePtr pipeline = GPipelineFactory::create();

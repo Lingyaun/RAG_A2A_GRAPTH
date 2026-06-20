@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
 
     CGRAPH_ECHO("[RAG] ======== query ========");
 
-    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
     GElementPtr setup, embed, search, generate;

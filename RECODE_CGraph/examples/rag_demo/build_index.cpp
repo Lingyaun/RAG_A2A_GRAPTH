@@ -32,8 +32,8 @@ int main(int argc, char* argv[]) {
 
     CGRAPH_ECHO("[RAG] ======== build_index: %zu files ========", file_paths.size());
 
-    // 注入 EmbeddingClient（有 key 走真实 API，无 key 自动回退 mock）
-    EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbeddingClient: 有 API key 时取消注释，无 key 自动使用 mock embedding
+    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
     GElementPtr loader  = nullptr;
