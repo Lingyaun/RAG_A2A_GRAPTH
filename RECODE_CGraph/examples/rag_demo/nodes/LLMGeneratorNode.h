@@ -1,13 +1,20 @@
-﻿#ifndef RAG_LLM_GENERATOR_NODE_H
+#ifndef RAG_LLM_GENERATOR_NODE_H
 #define RAG_LLM_GENERATOR_NODE_H
 
 #include "../RAGCommon.h"
 #include <sstream>
 #include <map>
 
-class LLMGeneratorNode : public GNode {
+// ===== Intermediate =====
+struct AnswerIntermediate {
+    std::string prompt;
+};
+
+// ===== PromptBuildNode: READ Parent/Fusion/Search + Doc + Query, COMPUTE prompt =====
+class PromptBuildNode : public GNode {
 public:
-    LLMGeneratorNode() { this->setName("Generator"); }
+    PromptBuildNode() { this->setName("PromptBuild"); }
+    void setBuffer(std::shared_ptr<AnswerIntermediate> b) { buf_ = std::move(b); }
 
     CSTATUS run() override {
         auto* pp = this->getGParam<ParentParam>("parent");
@@ -22,14 +29,9 @@ public:
         bool found = false;
 
         // Priority 1: parent_chunks
-        {
-            CGRAPH_PARAM_READ_REGION(pp) {
-                if (!pp->parent_chunks.empty()) {
-                    selected = pp->parent_chunks;
-                    found = true;
-                }
-            }
-        }
+        { CGRAPH_PARAM_READ_REGION(pp) {
+            if (!pp->parent_chunks.empty()) { selected = pp->parent_chunks; found = true; }
+        }}
         if (found) {
             CGRAPH_PARAM_READ_REGION(dp) { src_chunks = dp->chunks_large; }
             chunk_type = "parent_paragraphs";
@@ -38,10 +40,7 @@ public:
         // Priority 2: fused_results
         if (!found) {
             CGRAPH_PARAM_READ_REGION(fp) {
-                if (!fp->fused_results.empty()) {
-                    selected = fp->fused_results;
-                    found = true;
-                }
+                if (!fp->fused_results.empty()) { selected = fp->fused_results; found = true; }
             }
             if (found) {
                 CGRAPH_PARAM_READ_REGION(dp) { src_chunks = dp->chunks_small.empty() ? dp->chunks : dp->chunks_small; }
@@ -49,7 +48,7 @@ public:
             }
         }
 
-        // Priority 3: fallback merge from SearchParam
+        // Priority 3: fallback from SearchParam
         if (!found) {
             auto* sp = this->getGParam<SearchParam>("search");
             if (sp) {
@@ -82,18 +81,37 @@ public:
             }
         }
 
-        std::string prompt =
+        buf_->prompt =
             "Answer based ONLY on the materials below.\n\n"
             "=== Materials ===\n" + ctx.str() +
             "=== End Materials ===\n\n"
             "Question: " + q + "\n\nAnswer:";
 
-        auto* ap = this->getGParam<AnswerParam>("answer");
-        CGRAPH_PARAM_WRITE_REGION(ap) { ap->answer = prompt; }
-        CGRAPH_ECHO("[RAG] Generator: prompt %zu chars, %zu %s",
-                    prompt.size(), selected.size(), chunk_type.c_str());
+        CGRAPH_ECHO("[RAG] PromptBuild: %zu chars, %zu %s",
+            buf_->prompt.size(), selected.size(), chunk_type.c_str());
         return STATUS_OK;
     }
+
+private:
+    std::shared_ptr<AnswerIntermediate> buf_;
+};
+
+// ===== AnswerMergeNode: READ 中间结果, WRITE AnswerParam =====
+class AnswerMergeNode : public GNode {
+public:
+    AnswerMergeNode() { this->setName("AnswerMerge"); }
+    void setBuffer(std::shared_ptr<AnswerIntermediate> b) { buf_ = std::move(b); }
+
+    CSTATUS run() override {
+        auto* ap = this->getGParam<AnswerParam>("answer");
+        if (!ap) return STATUS_ERR;
+        CGRAPH_PARAM_WRITE_REGION(ap) { ap->answer = std::move(buf_->prompt); }
+        CGRAPH_ECHO("[RAG] AnswerMerge: committed %zu chars", ap->answer.size());
+        return STATUS_OK;
+    }
+
+private:
+    std::shared_ptr<AnswerIntermediate> buf_;
 };
 
 #endif

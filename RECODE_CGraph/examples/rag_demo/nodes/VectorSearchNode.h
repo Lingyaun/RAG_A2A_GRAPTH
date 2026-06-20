@@ -1,23 +1,31 @@
-﻿#ifndef RAG_VECTOR_SEARCH_NODE_H
+#ifndef RAG_VECTOR_SEARCH_NODE_H
 #define RAG_VECTOR_SEARCH_NODE_H
 
 #include "../RAGCommon.h"
 #include <queue>
 
-class VectorSearchNode : public GNode {
+// ===== Intermediate =====
+struct SearchIntermediate {
+    std::vector<std::pair<int, float>> result;   // 单分片结果
+    int slice_id_ = 0;
+    int num_slices_ = 1;
+};
+
+// ===== SearchComputeNode: READ EmbedParam + QueryEmbedParam, COMPUTE cosine =====
+class SearchComputeNode : public GNode {
 public:
-    VectorSearchNode() { this->setName("Search"); }
-    VectorSearchNode(int k, int sid, int ns, int qvi)
+    SearchComputeNode() { this->setName("SearchCompute"); }
+    SearchComputeNode(int k, int sid, int ns, int qvi)
         : top_k_(k), slice_id_(sid), num_slices_(ns), query_vec_index_(qvi) {
-        char buf[64]; snprintf(buf, sizeof(buf), "Search_S%d/%d", sid, ns);
+        char buf[64]; snprintf(buf, sizeof(buf), "SearchCompute_S%d/%d", sid, ns);
         this->setName(buf);
     }
-
     void configure(int k, int sid, int ns, int qvi) {
         top_k_ = k; slice_id_ = sid; num_slices_ = ns; query_vec_index_ = qvi;
-        char buf[64]; snprintf(buf, sizeof(buf), "Search_S%d/%d", sid, ns);
+        char buf[64]; snprintf(buf, sizeof(buf), "SearchCompute_S%d/%d", sid, ns);
         this->setName(buf);
     }
+    void setBuffer(std::shared_ptr<SearchIntermediate> b) { buf_ = std::move(b); }
 
     CSTATUS run() override {
         auto* qep = this->getGParam<QueryEmbedParam>("qembed");
@@ -32,11 +40,7 @@ public:
         if (!ep) return STATUS_ERR;
         size_t total;
         { CGRAPH_PARAM_READ_REGION(ep) { total = ep->embeddings.size(); }}
-        if (total == 0) {
-            auto* sp = this->getGParam<SearchParam>("search");
-            CGRAPH_PARAM_WRITE_REGION(sp) { sp->top_k.push_back({}); }
-            return STATUS_OK;
-        }
+        if (total == 0) { buf_->result.clear(); return STATUS_OK; }
 
         size_t sz = total / num_slices_;
         size_t s_start = slice_id_ * sz;
@@ -57,17 +61,37 @@ public:
         std::vector<SP> result;
         while (!pq.empty()) { result.push_back(pq.top()); pq.pop(); }
         std::reverse(result.begin(), result.end());
-
-        auto* sp = this->getGParam<SearchParam>("search");
-        CGRAPH_PARAM_WRITE_REGION(sp) { sp->top_k.push_back(result); }
-        float best = result.empty() ? 0.0f : result[0].second;
-        CGRAPH_ECHO("[RAG] [%s] [%zu,%zu) top1=%.4f",
-                    this->getName().c_str(), s_start, s_end, best);
+        buf_->result = std::move(result);
+        buf_->slice_id_ = slice_id_;
+        buf_->num_slices_ = num_slices_;
         return STATUS_OK;
     }
 
 private:
     int top_k_ = 10, slice_id_ = 0, num_slices_ = 1, query_vec_index_ = 0;
+    std::shared_ptr<SearchIntermediate> buf_;
+};
+
+// ===== SearchMergeNode: READ 中间结果, WRITE SearchParam =====
+class SearchMergeNode : public GNode {
+public:
+    SearchMergeNode() { this->setName("SearchMerge"); }
+    void setBuffer(std::shared_ptr<SearchIntermediate> b) { buf_ = std::move(b); }
+
+    CSTATUS run() override {
+        auto* sp = this->getGParam<SearchParam>("search");
+        if (!sp) return STATUS_ERR;
+        CGRAPH_PARAM_WRITE_REGION(sp) {
+            sp->top_k.push_back(buf_->result);
+        }
+        float best = buf_->result.empty() ? 0.0f : buf_->result[0].second;
+        CGRAPH_ECHO("[RAG] SearchMerge[%d/%d]: top1=%.4f",
+            buf_->slice_id_, buf_->num_slices_, best);
+        return STATUS_OK;
+    }
+
+private:
+    std::shared_ptr<SearchIntermediate> buf_;
 };
 
 #endif

@@ -1,8 +1,13 @@
-﻿// ============================================================
-// query_parallel.cpp 鈥?骞惰 RAG 鏌ヨ锛圥hase 2 鏍稿績锛?//
-// DAG: Loader鈫扖hunker鈫扗ocEmbed鈫扴etup鈫扗ecomposer
-//      鈫?4脳QE(骞惰) 鈫?8脳Search(骞惰) 鈫?2脳Rerank(骞惰) 鈫?Generator
-// 鍏?17 涓妭鐐癸紝5 灞傚苟琛岀獥鍙?// ============================================================
+// ============================================================
+// query_parallel.cpp — 并行 RAG 查询（Phase 2 核心）
+//
+// DAG: Loader→Chunker→EmbedCompute→EmbedMerge→Setup→Decomposer
+//      → 4×QEmbedCompute→4×QEmbedMerge(并行)
+//      → 8×SearchCompute→8×SearchMerge(并行)
+//      → 2×FusionCompute→2×FusionMerge(并行)
+//      → PromptBuild→AnswerMerge
+// 约 25+ 节点，5 层并行窗口
+// ============================================================
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -49,68 +54,89 @@ int main(int argc, char* argv[]) {
     CGRAPH_ECHO("[RAG] Query: %s", question.c_str());
     CGRAPH_ECHO("[RAG] ============================================");
 
-    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedComputeNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
 
-    // ====== Layer 1: 寤哄簱 + 璁剧疆鏌ヨ + 鍒嗚В ======
-    GElementPtr init, loader, chunker, doc_embed, setup, decomposer;
-    pipeline->registerGElement<InitNode>(&init, {}, "Init"); pipeline->registerGElement<DocLoaderNode>(&loader, {init}, "DocLoader");
+    // ====== Layer 1: 建库 + 设置查询 + 分解 ======
+    GElementPtr init, loader, chunker;
+    GElementPtr emb_comp, emb_merge, setup, decomposer;
+    auto emb_buf = std::make_shared<EmbedIntermediate>();
+
+    pipeline->registerGElement<InitNode>(&init, {}, "Init");
+    pipeline->registerGElement<DocLoaderNode>(&loader, {init}, "DocLoader");
     pipeline->registerGElement<ChunkerNode>(&chunker, {loader}, "Chunker");
-    pipeline->registerGElement<EmbedderNode>(&doc_embed, {chunker}, "DocEmbedder");
-    pipeline->registerGElement<QuerySetupNode>(&setup, {doc_embed}, "QuerySetup");
+    pipeline->registerGElement<EmbedComputeNode>(&emb_comp, {chunker}, "EmbedCompute");
+    pipeline->registerGElement<EmbedMergeNode>(&emb_merge, {emb_comp}, "EmbedMerge");
+    pipeline->registerGElement<QuerySetupNode>(&setup, {emb_merge}, "QuerySetup");
     pipeline->registerGElement<QueryDecomposerNode>(&decomposer, {setup}, "Decomposer");
 
     dynamic_cast<DocLoaderNode*>(loader)->setPaths(file_paths);
     dynamic_cast<QuerySetupNode*>(setup)->setQuery(question);
+    dynamic_cast<EmbedComputeNode*>(emb_comp)->setBuffer(emb_buf);
+    dynamic_cast<EmbedMergeNode*>(emb_merge)->setBuffer(emb_buf);
 
-    // ====== Layer 2: 4璺苟琛?Embedding ======
-    GElementPtr qe0, qe1, qe2, qe3;
-    pipeline->registerGElement<EmbedderNode>(&qe0, {decomposer}, "QE_SQ0");
-    pipeline->registerGElement<EmbedderNode>(&qe1, {decomposer}, "QE_SQ1");
-    pipeline->registerGElement<EmbedderNode>(&qe2, {decomposer}, "QE_SQ2");
-    pipeline->registerGElement<EmbedderNode>(&qe3, {decomposer}, "QE_SQ3");
+    // ====== Layer 2: 4路并行 Query Embedding (Compute+Merge) ======
+    GElementPtr qc[4], qm[4];
+    std::shared_ptr<QEmbedIntermediate> qbuf[4];
+    for (int i = 0; i < 4; ++i) {
+        qbuf[i] = std::make_shared<QEmbedIntermediate>();
+        char nm[16];
+        snprintf(nm, sizeof(nm), "QEC%d", i);
+        pipeline->registerGElement<QueryEmbedComputeNode>(&qc[i], {decomposer}, nm);
+        dynamic_cast<QueryEmbedComputeNode*>(qc[i])->setSubQueryIndex(i);
+        dynamic_cast<QueryEmbedComputeNode*>(qc[i])->setBuffer(qbuf[i]);
 
-    dynamic_cast<EmbedderNode*>(qe0)->setQueryMode(true);
-    dynamic_cast<EmbedderNode*>(qe0)->setSubQueryIndex(0);
-    dynamic_cast<EmbedderNode*>(qe1)->setQueryMode(true);
-    dynamic_cast<EmbedderNode*>(qe1)->setSubQueryIndex(1);
-    dynamic_cast<EmbedderNode*>(qe2)->setQueryMode(true);
-    dynamic_cast<EmbedderNode*>(qe2)->setSubQueryIndex(2);
-    dynamic_cast<EmbedderNode*>(qe3)->setQueryMode(true);
-    dynamic_cast<EmbedderNode*>(qe3)->setSubQueryIndex(3);
+        snprintf(nm, sizeof(nm), "QEM%d", i);
+        pipeline->registerGElement<QueryEmbedMergeNode>(&qm[i], {qc[i]}, nm);
+        dynamic_cast<QueryEmbedMergeNode*>(qm[i])->setBuffer(qbuf[i]);
+    }
 
-    // ====== Layer 3: 8璺苟琛屾绱?======
-    GElementPtr s0a, s0b, s1a, s1b, s2a, s2b, s3a, s3b;
-    pipeline->registerGElement<VectorSearchNode>(&s0a, {qe0}, "S0A");
-    pipeline->registerGElement<VectorSearchNode>(&s0b, {qe0}, "S0B");
-    pipeline->registerGElement<VectorSearchNode>(&s1a, {qe1}, "S1A");
-    pipeline->registerGElement<VectorSearchNode>(&s1b, {qe1}, "S1B");
-    pipeline->registerGElement<VectorSearchNode>(&s2a, {qe2}, "S2A");
-    pipeline->registerGElement<VectorSearchNode>(&s2b, {qe2}, "S2B");
-    pipeline->registerGElement<VectorSearchNode>(&s3a, {qe3}, "S3A");
-    pipeline->registerGElement<VectorSearchNode>(&s3b, {qe3}, "S3B");
+    // ====== Layer 3: 8路并行 Search (Compute+Merge) ======
+    GElementPtr sc[4][2], sm[4][2];
+    std::shared_ptr<SearchIntermediate> sbuf[4][2];
+    for (int i = 0; i < 4; ++i) for (int j = 0; j < 2; ++j) {
+        sbuf[i][j] = std::make_shared<SearchIntermediate>();
+        char nm[16];
+        snprintf(nm, sizeof(nm), "SC%d%c", i, 'A'+j);
+        pipeline->registerGElement<SearchComputeNode>(&sc[i][j], {qm[i]}, nm);
+        dynamic_cast<SearchComputeNode*>(sc[i][j])->configure(10, j, 2, i);
+        dynamic_cast<SearchComputeNode*>(sc[i][j])->setBuffer(sbuf[i][j]);
 
-    dynamic_cast<VectorSearchNode*>(s0a)->configure(10, 0, 2, 0);
-    dynamic_cast<VectorSearchNode*>(s0b)->configure(10, 1, 2, 0);
-    dynamic_cast<VectorSearchNode*>(s1a)->configure(10, 0, 2, 1);
-    dynamic_cast<VectorSearchNode*>(s1b)->configure(10, 1, 2, 1);
-    dynamic_cast<VectorSearchNode*>(s2a)->configure(10, 0, 2, 2);
-    dynamic_cast<VectorSearchNode*>(s2b)->configure(10, 1, 2, 2);
-    dynamic_cast<VectorSearchNode*>(s3a)->configure(10, 0, 2, 3);
-    dynamic_cast<VectorSearchNode*>(s3b)->configure(10, 1, 2, 3);
+        snprintf(nm, sizeof(nm), "SM%d%c", i, 'A'+j);
+        pipeline->registerGElement<SearchMergeNode>(&sm[i][j], {sc[i][j]}, nm);
+        dynamic_cast<SearchMergeNode*>(sm[i][j])->setBuffer(sbuf[i][j]);
+    }
 
-    // ====== Layer 4: 2璺苟琛岃瀺鍚?======
-    GElementPtr rerank_01, rerank_23;
-    pipeline->registerGElement<FusionRerankerNode>(&rerank_01, {s0a, s0b, s1a, s1b}, "Rerank_01");
-    pipeline->registerGElement<FusionRerankerNode>(&rerank_23, {s2a, s2b, s3a, s3b}, "Rerank_23");
+    // ====== Layer 4: 2路并行融合 (Compute+Merge) ======
+    GElementPtr fc01, fc23, fm01, fm23;
+    auto fbuf01 = std::make_shared<FusionIntermediate>();
+    auto fbuf23 = std::make_shared<FusionIntermediate>();
 
-    // ====== Layer 5: 鐢熸垚 ======
-    GElementPtr generator;
-    pipeline->registerGElement<LLMGeneratorNode>(&generator, {rerank_01, rerank_23}, "Generator");
+    pipeline->registerGElement<FusionComputeNode>(&fc01,
+        {sm[0][0], sm[0][1], sm[1][0], sm[1][1]}, "FC01");
+    pipeline->registerGElement<FusionComputeNode>(&fc23,
+        {sm[2][0], sm[2][1], sm[3][0], sm[3][1]}, "FC23");
+    pipeline->registerGElement<FusionMergeNode>(&fm01, {fc01}, "FM01");
+    pipeline->registerGElement<FusionMergeNode>(&fm23, {fc23}, "FM23");
 
-    // ====== 鎵ц ======
-    CGRAPH_ECHO("[RAG] DAG ready: 17 nodes, 5 layers. Starting...");
+    dynamic_cast<FusionComputeNode*>(fc01)->setBuffer(fbuf01);
+    dynamic_cast<FusionComputeNode*>(fc23)->setBuffer(fbuf23);
+    dynamic_cast<FusionMergeNode*>(fm01)->setBuffer(fbuf01);
+    dynamic_cast<FusionMergeNode*>(fm23)->setBuffer(fbuf23);
+
+    // ====== Layer 5: 生成 (PromptBuild+AnswerMerge) ======
+    GElementPtr prompt_build, answer_merge;
+    auto ans_buf = std::make_shared<AnswerIntermediate>();
+
+    pipeline->registerGElement<PromptBuildNode>(&prompt_build, {fm01, fm23}, "PromptBuild");
+    pipeline->registerGElement<AnswerMergeNode>(&answer_merge, {prompt_build}, "AnswerMerge");
+
+    dynamic_cast<PromptBuildNode*>(prompt_build)->setBuffer(ans_buf);
+    dynamic_cast<AnswerMergeNode*>(answer_merge)->setBuffer(ans_buf);
+
+    // ====== 执行 ======
+    CGRAPH_ECHO("[RAG] DAG ready: ~25 nodes, 5 layers. Starting...");
     pipeline->process();
     CGRAPH_ECHO("[RAG] Parallel RAG completed.");
 

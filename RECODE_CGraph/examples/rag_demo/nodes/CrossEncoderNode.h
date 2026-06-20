@@ -1,14 +1,21 @@
-﻿#ifndef RAG_CROSS_ENCODER_NODE_H
+#ifndef RAG_CROSS_ENCODER_NODE_H
 #define RAG_CROSS_ENCODER_NODE_H
 
 #include "../RAGCommon.h"
 
-class CrossEncoderNode : public GNode {
+// ===== Intermediate =====
+struct CEIntermediate {
+    std::vector<std::pair<int, float>> reranked;
+};
+
+// ===== CEComputeNode: READ ParentParam + DocParam + QueryParam, COMPUTE rerank =====
+class CEComputeNode : public GNode {
     int final_top_k_ = 5;
 
 public:
-    CrossEncoderNode() { this->setName("CrossEncoder"); }
-    CrossEncoderNode(int k) : final_top_k_(k) { this->setName("CrossEncoder"); }
+    CEComputeNode() { this->setName("CECompute"); }
+    CEComputeNode(int k) : final_top_k_(k) { this->setName("CECompute"); }
+    void setBuffer(std::shared_ptr<CEIntermediate> b) { buf_ = std::move(b); }
 
     CSTATUS run() override {
         auto* pp = this->getGParam<ParentParam>("parent");
@@ -25,7 +32,8 @@ public:
         { CGRAPH_PARAM_READ_REGION(qp) { q = qp->query; } }
 
         if (candidates.empty()) {
-            CGRAPH_ECHO("[RAG] CrossEncoder: no candidates");
+            CGRAPH_ECHO("[RAG] CECompute: no candidates");
+            buf_->reranked.clear();
             return STATUS_OK;
         }
 
@@ -45,14 +53,34 @@ public:
 
         std::sort(candidates.begin(), candidates.end(), [](auto& a, auto& b) { return a.second > b.second; });
         if ((int)candidates.size() > final_top_k_) candidates.resize(final_top_k_);
+        buf_->reranked = std::move(candidates);
 
-        CGRAPH_PARAM_WRITE_REGION(pp) { pp->parent_chunks = candidates; }
-
-        float best = candidates.empty() ? 0.0f : candidates[0].second;
-        CGRAPH_ECHO("[RAG] CrossEncoder: %zu candidates -> top-%d, best=%.4f",
-                    candidates.size(), final_top_k_, best);
+        float best = buf_->reranked.empty() ? 0.0f : buf_->reranked[0].second;
+        CGRAPH_ECHO("[RAG] CECompute: %zu -> top-%d, best=%.4f",
+            buf_->reranked.size(), final_top_k_, best);
         return STATUS_OK;
     }
+
+private:
+    std::shared_ptr<CEIntermediate> buf_;
+};
+
+// ===== CEMergeNode: READ 中间结果, WRITE ParentParam (覆盖为精排结果) =====
+class CEMergeNode : public GNode {
+public:
+    CEMergeNode() { this->setName("CEMerge"); }
+    void setBuffer(std::shared_ptr<CEIntermediate> b) { buf_ = std::move(b); }
+
+    CSTATUS run() override {
+        auto* pp = this->getGParam<ParentParam>("parent");
+        if (!pp) return STATUS_ERR;
+        CGRAPH_PARAM_WRITE_REGION(pp) { pp->parent_chunks = std::move(buf_->reranked); }
+        CGRAPH_ECHO("[RAG] CEMerge: committed %zu reranked", pp->parent_chunks.size());
+        return STATUS_OK;
+    }
+
+private:
+    std::shared_ptr<CEIntermediate> buf_;
 };
 
 #endif

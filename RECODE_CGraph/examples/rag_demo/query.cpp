@@ -1,5 +1,6 @@
-﻿// query.cpp -- simple query entry
-// DAG: Init -> Setup -> QueryEmbed -> Search -> Generator
+// query.cpp -- simple query entry
+// DAG: Init -> Setup -> QEmbedCompute -> QEmbedMerge
+//      -> SearchCompute -> SearchMerge -> PromptBuild -> AnswerMerge
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -31,19 +32,32 @@ int main(int argc, char* argv[]) {
     }
 
     CGRAPH_ECHO("[RAG] ======== query ========");
-    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedComputeNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+
+    auto qemb_buf   = std::make_shared<QEmbedIntermediate>();
+    auto search_buf = std::make_shared<SearchIntermediate>();
+    auto answer_buf = std::make_shared<AnswerIntermediate>();
 
     GPipelinePtr pipeline = GPipelineFactory::create();
-    GElementPtr init, setup, embed, search, generate;
+    GElementPtr init, setup, qemb_comp, qemb_merge, search_comp, search_merge;
+    GElementPtr prompt_build, answer_merge;
 
     pipeline->registerGElement<InitNode>(&init, {}, "Init");
     pipeline->registerGElement<QuerySetupNode>(&setup, {init}, "Setup");
-    pipeline->registerGElement<EmbedderNode>(&embed, {setup}, "QueryEmbed");
-    pipeline->registerGElement<VectorSearchNode>(&search, {embed}, "Search");
-    pipeline->registerGElement<LLMGeneratorNode>(&generate, {search}, "Generator");
+    pipeline->registerGElement<QueryEmbedComputeNode>(&qemb_comp, {setup}, "QEmbedCompute");
+    pipeline->registerGElement<QueryEmbedMergeNode>(&qemb_merge, {qemb_comp}, "QEmbedMerge");
+    pipeline->registerGElement<SearchComputeNode>(&search_comp, {qemb_merge}, "SearchCompute");
+    pipeline->registerGElement<SearchMergeNode>(&search_merge, {search_comp}, "SearchMerge");
+    pipeline->registerGElement<PromptBuildNode>(&prompt_build, {search_merge}, "PromptBuild");
+    pipeline->registerGElement<AnswerMergeNode>(&answer_merge, {prompt_build}, "AnswerMerge");
 
     dynamic_cast<QuerySetupNode*>(setup)->setQuery(question);
-    dynamic_cast<EmbedderNode*>(embed)->setQueryMode(true);
+    dynamic_cast<QueryEmbedComputeNode*>(qemb_comp)->setBuffer(qemb_buf);
+    dynamic_cast<QueryEmbedMergeNode*>(qemb_merge)->setBuffer(qemb_buf);
+    dynamic_cast<SearchComputeNode*>(search_comp)->setBuffer(search_buf);
+    dynamic_cast<SearchMergeNode*>(search_merge)->setBuffer(search_buf);
+    dynamic_cast<PromptBuildNode*>(prompt_build)->setBuffer(answer_buf);
+    dynamic_cast<AnswerMergeNode*>(answer_merge)->setBuffer(answer_buf);
 
     pipeline->process();
 

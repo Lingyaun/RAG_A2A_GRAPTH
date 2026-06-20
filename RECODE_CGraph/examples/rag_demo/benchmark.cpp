@@ -1,7 +1,7 @@
-﻿// ============================================================
+// ============================================================
 // benchmark.cpp — 性能基准测试
-// Phase 6 扩展: 增加 Hierarchical 模式对比
 // 对比 Serial vs Parallel vs Hierarchical
+// 所有 SlowXxx 继承自 Compute 节点（细粒度拆分后）
 // ============================================================
 
 #include "../../src/GraphCtrl/GraphInclude.h"
@@ -32,29 +32,41 @@
 static int g_delay_ms     = 50;
 static int g_delay_jitter = 30;
 
-// ---- 带随机延迟的子类 ----
-class SlowEmbedderNode : public EmbedderNode {
+// ---- 带随机延迟的子类 (继承自 Compute 节点) ----
+class SlowEmbedComputeNode : public EmbedComputeNode {
 public:
     CSTATUS run() override {
-        CSTATUS st = EmbedderNode::run();
+        CSTATUS st = EmbedComputeNode::run();
         int j = g_delay_jitter>0?(std::rand()%(g_delay_jitter*2))-g_delay_jitter:0;
         int d = g_delay_ms+j; if(d>0)std::this_thread::sleep_for(std::chrono::milliseconds(d));
         return st;
     }
 };
-class SlowSearchNode : public VectorSearchNode {
+
+class SlowQEmbedComputeNode : public QueryEmbedComputeNode {
 public:
     CSTATUS run() override {
-        CSTATUS st = VectorSearchNode::run();
+        CSTATUS st = QueryEmbedComputeNode::run();
         int j = g_delay_jitter>0?(std::rand()%(g_delay_jitter*2))-g_delay_jitter:0;
         int d = g_delay_ms+j; if(d>0)std::this_thread::sleep_for(std::chrono::milliseconds(d));
         return st;
     }
 };
-class SlowBM25Node : public BM25Node {
+
+class SlowSearchComputeNode : public SearchComputeNode {
 public:
     CSTATUS run() override {
-        CSTATUS st = BM25Node::run();
+        CSTATUS st = SearchComputeNode::run();
+        int j = g_delay_jitter>0?(std::rand()%(g_delay_jitter*2))-g_delay_jitter:0;
+        int d = g_delay_ms+j; if(d>0)std::this_thread::sleep_for(std::chrono::milliseconds(d));
+        return st;
+    }
+};
+
+class SlowBM25ComputeNode : public BM25ComputeNode {
+public:
+    CSTATUS run() override {
+        CSTATUS st = BM25ComputeNode::run();
         int j = g_delay_jitter>0?(std::rand()%(g_delay_jitter*2))-g_delay_jitter:0;
         int d = g_delay_ms+j; if(d>0)std::this_thread::sleep_for(std::chrono::milliseconds(d));
         return st;
@@ -71,17 +83,37 @@ public:
 // ---- Serial ----
 double run_serial(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr init,l,c,de,s,qe,sh,g;
-    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
+    GElementPtr init,l,c,ec,em,s,qc,qm,shc,shm,pb,am;
+
+    auto ebuf  = std::make_shared<EmbedIntermediate>();
+    auto qbuf  = std::make_shared<QEmbedIntermediate>();
+    auto sbuf  = std::make_shared<SearchIntermediate>();
+    auto abuf  = std::make_shared<AnswerIntermediate>();
+
+    pl->registerGElement<InitNode>(&init,{},"Init");
+    pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
-    pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
-    pl->registerGElement<QuerySetupNode>(&s,{de},"S");
-    pl->registerGElement<SlowEmbedderNode>(&qe,{s},"QE");
-    pl->registerGElement<SlowSearchNode>(&sh,{qe},"SH");
-    pl->registerGElement<LLMGeneratorNode>(&g,{sh},"G");
+    pl->registerGElement<SlowEmbedComputeNode>(&ec,{c},"EC");
+    pl->registerGElement<EmbedMergeNode>(&em,{ec},"EM");
+    pl->registerGElement<QuerySetupNode>(&s,{em},"S");
+    pl->registerGElement<SlowQEmbedComputeNode>(&qc,{s},"QC");
+    pl->registerGElement<QueryEmbedMergeNode>(&qm,{qc},"QM");
+    pl->registerGElement<SlowSearchComputeNode>(&shc,{qm},"SHC");
+    pl->registerGElement<SearchMergeNode>(&shm,{shc},"SHM");
+    pl->registerGElement<PromptBuildNode>(&pb,{shm},"PB");
+    pl->registerGElement<AnswerMergeNode>(&am,{pb},"AM");
+
     dynamic_cast<DocLoaderNode*>(l)->setPaths(files);
     dynamic_cast<QuerySetupNode*>(s)->setQuery(q);
-    dynamic_cast<EmbedderNode*>(qe)->setQueryMode(true);
+    dynamic_cast<EmbedComputeNode*>(ec)->setBuffer(ebuf);
+    dynamic_cast<EmbedMergeNode*>(em)->setBuffer(ebuf);
+    dynamic_cast<QueryEmbedComputeNode*>(qc)->setBuffer(qbuf);
+    dynamic_cast<QueryEmbedMergeNode*>(qm)->setBuffer(qbuf);
+    dynamic_cast<SearchComputeNode*>(shc)->setBuffer(sbuf);
+    dynamic_cast<SearchMergeNode*>(shm)->setBuffer(sbuf);
+    dynamic_cast<PromptBuildNode*>(pb)->setBuffer(abuf);
+    dynamic_cast<AnswerMergeNode*>(am)->setBuffer(abuf);
+
     Timer t; t.start(); pl->process();
     double ms=t.ms(); GPipelineFactory::destroy(pl); return ms;
 }
@@ -89,72 +121,158 @@ double run_serial(const std::vector<std::string>& files, const std::string& q){
 // ---- Parallel ----
 double run_parallel(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr init,l,c,de,s,dc;
-    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
+    GElementPtr init,l,c,ec,em,s,dc;
+    auto ebuf = std::make_shared<EmbedIntermediate>();
+
+    pl->registerGElement<InitNode>(&init,{},"Init");
+    pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
-    pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
-    pl->registerGElement<QuerySetupNode>(&s,{de},"S");
+    pl->registerGElement<SlowEmbedComputeNode>(&ec,{c},"EC");
+    pl->registerGElement<EmbedMergeNode>(&em,{ec},"EM");
+    pl->registerGElement<QuerySetupNode>(&s,{em},"S");
     pl->registerGElement<QueryDecomposerNode>(&dc,{s},"DC");
+
     dynamic_cast<DocLoaderNode*>(l)->setPaths(files);
     dynamic_cast<QuerySetupNode*>(s)->setQuery(q);
+    dynamic_cast<EmbedComputeNode*>(ec)->setBuffer(ebuf);
+    dynamic_cast<EmbedMergeNode*>(em)->setBuffer(ebuf);
 
-    GElementPtr qe[4],sh[4][2];
+    GElementPtr qec[4],qem[4];
+    std::shared_ptr<QEmbedIntermediate> qbuf[4];
     for(int i=0;i<4;++i){
-        char nm[16];snprintf(nm,sizeof(nm),"QE%d",i);
-        pl->registerGElement<SlowEmbedderNode>(&qe[i],{dc},nm);
-        dynamic_cast<EmbedderNode*>(qe[i])->setQueryMode(true);
-        dynamic_cast<EmbedderNode*>(qe[i])->setSubQueryIndex(i);
+        qbuf[i]=std::make_shared<QEmbedIntermediate>();
+        char nm[16];snprintf(nm,sizeof(nm),"QEC%d",i);
+        pl->registerGElement<SlowQEmbedComputeNode>(&qec[i],{dc},nm);
+        dynamic_cast<QueryEmbedComputeNode*>(qec[i])->setSubQueryIndex(i);
+        dynamic_cast<QueryEmbedComputeNode*>(qec[i])->setBuffer(qbuf[i]);
+        snprintf(nm,sizeof(nm),"QEM%d",i);
+        pl->registerGElement<QueryEmbedMergeNode>(&qem[i],{qec[i]},nm);
+        dynamic_cast<QueryEmbedMergeNode*>(qem[i])->setBuffer(qbuf[i]);
     }
+
+    GElementPtr shc[4][2],shm[4][2];
+    std::shared_ptr<SearchIntermediate> sbuf[4][2];
     for(int i=0;i<4;++i)for(int j=0;j<2;++j){
-        char nm[16];snprintf(nm,sizeof(nm),"S%d%c",i,'A'+j);
-        pl->registerGElement<SlowSearchNode>(&sh[i][j],{qe[i]},nm);
-        dynamic_cast<VectorSearchNode*>(sh[i][j])->configure(10,j,2,i);
+        sbuf[i][j]=std::make_shared<SearchIntermediate>();
+        char nm[16];snprintf(nm,sizeof(nm),"SHC%d%c",i,'A'+j);
+        pl->registerGElement<SlowSearchComputeNode>(&shc[i][j],{qem[i]},nm);
+        dynamic_cast<SearchComputeNode*>(shc[i][j])->configure(10,j,2,i);
+        dynamic_cast<SearchComputeNode*>(shc[i][j])->setBuffer(sbuf[i][j]);
+        snprintf(nm,sizeof(nm),"SHM%d%c",i,'A'+j);
+        pl->registerGElement<SearchMergeNode>(&shm[i][j],{shc[i][j]},nm);
+        dynamic_cast<SearchMergeNode*>(shm[i][j])->setBuffer(sbuf[i][j]);
     }
-    GElementPtr r01,r23,g;
-    pl->registerGElement<FusionRerankerNode>(&r01,{sh[0][0],sh[0][1],sh[1][0],sh[1][1]},"R01");
-    pl->registerGElement<FusionRerankerNode>(&r23,{sh[2][0],sh[2][1],sh[3][0],sh[3][1]},"R23");
-    pl->registerGElement<LLMGeneratorNode>(&g,{r01,r23},"G");
+
+    GElementPtr fc01,fc23,fm01,fm23,pb,am;
+    auto fbuf01=std::make_shared<FusionIntermediate>();
+    auto fbuf23=std::make_shared<FusionIntermediate>();
+    auto abuf=std::make_shared<AnswerIntermediate>();
+
+    pl->registerGElement<FusionComputeNode>(&fc01,{shm[0][0],shm[0][1],shm[1][0],shm[1][1]},"FC01");
+    pl->registerGElement<FusionComputeNode>(&fc23,{shm[2][0],shm[2][1],shm[3][0],shm[3][1]},"FC23");
+    pl->registerGElement<FusionMergeNode>(&fm01,{fc01},"FM01");
+    pl->registerGElement<FusionMergeNode>(&fm23,{fc23},"FM23");
+    pl->registerGElement<PromptBuildNode>(&pb,{fm01,fm23},"PB");
+    pl->registerGElement<AnswerMergeNode>(&am,{pb},"AM");
+
+    dynamic_cast<FusionComputeNode*>(fc01)->setBuffer(fbuf01);
+    dynamic_cast<FusionComputeNode*>(fc23)->setBuffer(fbuf23);
+    dynamic_cast<FusionMergeNode*>(fm01)->setBuffer(fbuf01);
+    dynamic_cast<FusionMergeNode*>(fm23)->setBuffer(fbuf23);
+    dynamic_cast<PromptBuildNode*>(pb)->setBuffer(abuf);
+    dynamic_cast<AnswerMergeNode*>(am)->setBuffer(abuf);
 
     Timer t; t.start(); pl->process();
     double ms=t.ms(); GPipelineFactory::destroy(pl); return ms;
 }
 
-// ---- Hierarchical (Phase 6) ----
+// ---- Hierarchical ----
 double run_hierarchical(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr init,l,c,de,s,dc;
-    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
+    auto ebuf=std::make_shared<EmbedIntermediate>();
+
+    GElementPtr init,l,c,ec,em,s,dc;
+    pl->registerGElement<InitNode>(&init,{},"Init");
+    pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
-    pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
-    pl->registerGElement<QuerySetupNode>(&s,{de},"S");
+    pl->registerGElement<SlowEmbedComputeNode>(&ec,{c},"EC");
+    pl->registerGElement<EmbedMergeNode>(&em,{ec},"EM");
+    pl->registerGElement<QuerySetupNode>(&s,{em},"S");
     pl->registerGElement<QueryDecomposerNode>(&dc,{s},"DC");
+
     dynamic_cast<DocLoaderNode*>(l)->setPaths(files);
     dynamic_cast<QuerySetupNode*>(s)->setQuery(q);
+    dynamic_cast<EmbedComputeNode*>(ec)->setBuffer(ebuf);
+    dynamic_cast<EmbedMergeNode*>(em)->setBuffer(ebuf);
 
-    GElementPtr qe[4];
+    GElementPtr qec[4],qem[4];
+    std::shared_ptr<QEmbedIntermediate> qbuf[4];
     for(int i=0;i<4;++i){
-        char nm[16];snprintf(nm,sizeof(nm),"QE%d",i);
-        pl->registerGElement<SlowEmbedderNode>(&qe[i],{dc},nm);
-        dynamic_cast<EmbedderNode*>(qe[i])->setQueryMode(true);
-        dynamic_cast<EmbedderNode*>(qe[i])->setSubQueryIndex(i);
+        qbuf[i]=std::make_shared<QEmbedIntermediate>();
+        char nm[16];snprintf(nm,sizeof(nm),"QEC%d",i);
+        pl->registerGElement<SlowQEmbedComputeNode>(&qec[i],{dc},nm);
+        dynamic_cast<QueryEmbedComputeNode*>(qec[i])->setSubQueryIndex(i);
+        dynamic_cast<QueryEmbedComputeNode*>(qec[i])->setBuffer(qbuf[i]);
+        snprintf(nm,sizeof(nm),"QEM%d",i);
+        pl->registerGElement<QueryEmbedMergeNode>(&qem[i],{qec[i]},nm);
+        dynamic_cast<QueryEmbedMergeNode*>(qem[i])->setBuffer(qbuf[i]);
     }
-    GElementPtr sh[4][2];
-    for(int i=0;i<4;++i)for(int j=0;j<2;++j){
-        char nm[16];snprintf(nm,sizeof(nm),"S%d%c",i,'A'+j);
-        pl->registerGElement<SlowSearchNode>(&sh[i][j],{qe[i]},nm);
-        dynamic_cast<VectorSearchNode*>(sh[i][j])->configure(25,j,2,i);
-    }
-    GElementPtr bm25,plk,ce1,ce2,g;
-    pl->registerGElement<SlowBM25Node>(&bm25,{de},"BM25");
-    dynamic_cast<BM25Node*>(bm25)->configure(50);
 
-    GElementPtr fusion;
-    std::set<GElement*> fusion_deps={sh[0][0],sh[0][1],sh[1][0],sh[1][1],sh[2][0],sh[2][1],sh[3][0],sh[3][1],bm25};
-    pl->registerGElement<FusionRerankerNode>(&fusion,fusion_deps,"FusionHybrid");
-    pl->registerGElement<ParentLookupNode>(&plk,{fusion},"ParentLookup");
-    pl->registerGElement<CrossEncoderNode>(&ce1,{plk},"CE1");
-    pl->registerGElement<CrossEncoderNode>(&ce2,{plk},"CE2");
-    pl->registerGElement<LLMGeneratorNode>(&g,{ce1,ce2},"G");
+    GElementPtr shc[4][2],shm[4][2];
+    std::shared_ptr<SearchIntermediate> sbuf[4][2];
+    for(int i=0;i<4;++i)for(int j=0;j<2;++j){
+        sbuf[i][j]=std::make_shared<SearchIntermediate>();
+        char nm[16];snprintf(nm,sizeof(nm),"SHC%d%c",i,'A'+j);
+        pl->registerGElement<SlowSearchComputeNode>(&shc[i][j],{qem[i]},nm);
+        dynamic_cast<SearchComputeNode*>(shc[i][j])->configure(25,j,2,i);
+        dynamic_cast<SearchComputeNode*>(shc[i][j])->setBuffer(sbuf[i][j]);
+        snprintf(nm,sizeof(nm),"SHM%d%c",i,'A'+j);
+        pl->registerGElement<SearchMergeNode>(&shm[i][j],{shc[i][j]},nm);
+        dynamic_cast<SearchMergeNode*>(shm[i][j])->setBuffer(sbuf[i][j]);
+    }
+
+    GElementPtr bmc,bmm;
+    auto bmbuf=std::make_shared<BM25Intermediate>();
+    pl->registerGElement<SlowBM25ComputeNode>(&bmc,{em},"BMC");
+    pl->registerGElement<BM25MergeNode>(&bmm,{bmc},"BMM");
+    dynamic_cast<BM25ComputeNode*>(bmc)->configure(50);
+    dynamic_cast<BM25ComputeNode*>(bmc)->setBuffer(bmbuf);
+    dynamic_cast<BM25MergeNode*>(bmm)->setBuffer(bmbuf);
+
+    GElementPtr fc,fm,pc,pm,cec[2],cem[2],pb,am;
+    auto fbuf=std::make_shared<FusionIntermediate>();
+    auto pbuf=std::make_shared<ParentIntermediate>();
+    std::shared_ptr<CEIntermediate> cebuf[2]{
+        std::make_shared<CEIntermediate>(),
+        std::make_shared<CEIntermediate>()};
+    auto abuf=std::make_shared<AnswerIntermediate>();
+
+    std::set<GElement*> fusion_deps={shm[0][0],shm[0][1],shm[1][0],shm[1][1],
+                                     shm[2][0],shm[2][1],shm[3][0],shm[3][1],bmm};
+    pl->registerGElement<FusionComputeNode>(&fc,fusion_deps,"FC");
+    pl->registerGElement<FusionMergeNode>(&fm,{fc},"FM");
+    pl->registerGElement<ParentComputeNode>(&pc,{fm},"PC");
+    pl->registerGElement<ParentMergeNode>(&pm,{pc},"PM");
+
+    for(int i=0;i<2;++i){
+        char nm[16];
+        snprintf(nm,sizeof(nm),"CEC%d",i+1);
+        pl->registerGElement<CEComputeNode>(&cec[i],{pm},nm);
+        dynamic_cast<CEComputeNode*>(cec[i])->setBuffer(cebuf[i]);
+        snprintf(nm,sizeof(nm),"CEM%d",i+1);
+        pl->registerGElement<CEMergeNode>(&cem[i],{cec[i]},nm);
+        dynamic_cast<CEMergeNode*>(cem[i])->setBuffer(cebuf[i]);
+    }
+
+    pl->registerGElement<PromptBuildNode>(&pb,{cem[0],cem[1]},"PB");
+    pl->registerGElement<AnswerMergeNode>(&am,{pb},"AM");
+
+    dynamic_cast<FusionComputeNode*>(fc)->setBuffer(fbuf);
+    dynamic_cast<FusionMergeNode*>(fm)->setBuffer(fbuf);
+    dynamic_cast<ParentComputeNode*>(pc)->setBuffer(pbuf);
+    dynamic_cast<ParentMergeNode*>(pm)->setBuffer(pbuf);
+    dynamic_cast<PromptBuildNode*>(pb)->setBuffer(abuf);
+    dynamic_cast<AnswerMergeNode*>(am)->setBuffer(abuf);
 
     Timer t; t.start(); pl->process();
     double ms=t.ms(); GPipelineFactory::destroy(pl); return ms;
@@ -172,8 +290,6 @@ int main(int argc, char* argv[]){
     SetConsoleOutputCP(CP_UTF8);
 #endif
     std::srand((unsigned)std::chrono::system_clock::now().time_since_epoch().count());
-
-    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     int runs=5;
     std::vector<std::string> files;

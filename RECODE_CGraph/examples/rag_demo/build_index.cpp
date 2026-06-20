@@ -1,5 +1,5 @@
-﻿// build_index.cpp -- build index entry
-// DAG: Init -> Loader -> Chunker -> Embedder
+// build_index.cpp -- build index entry
+// DAG: Init -> Loader -> Chunker -> EmbedCompute -> EmbedMerge
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -30,17 +30,22 @@ int main(int argc, char* argv[]) {
 
     CGRAPH_ECHO("[RAG] ======== build_index: %zu files ========", file_paths.size());
 
-    // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+    // EmbedComputeNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
+
+    auto emb_buf = std::make_shared<EmbedIntermediate>();
 
     GPipelinePtr pipeline = GPipelineFactory::create();
-    GElementPtr init, loader, chunker, embedder;
+    GElementPtr init, loader, chunker, emb_comp, emb_merge;
 
     pipeline->registerGElement<InitNode>(&init, {}, "Init");
     pipeline->registerGElement<DocLoaderNode>(&loader, {init}, "Loader");
     pipeline->registerGElement<ChunkerNode>(&chunker, {loader}, "Chunker");
-    pipeline->registerGElement<EmbedderNode>(&embedder, {chunker}, "Embedder");
+    pipeline->registerGElement<EmbedComputeNode>(&emb_comp, {chunker}, "EmbedCompute");
+    pipeline->registerGElement<EmbedMergeNode>(&emb_merge, {emb_comp}, "EmbedMerge");
 
     dynamic_cast<DocLoaderNode*>(loader)->setPaths(file_paths);
+    dynamic_cast<EmbedComputeNode*>(emb_comp)->setBuffer(emb_buf);
+    dynamic_cast<EmbedMergeNode*>(emb_merge)->setBuffer(emb_buf);
 
     pipeline->process();
 
