@@ -1,7 +1,7 @@
 ﻿# RAG Pipeline — 基于 CGraph + A2A 的并行检索增强生成系统
 
 基于 [CGraph](https://github.com/ChunelFeng/CGraph) DAG 计算引擎与 A2A（Agent-to-Agent）协议构建的高性能 C++ RAG（Retrieval-Augmented Generation）系统。
-### 1.1 什么是 RAG？
+###  什么是 RAG？
 
 RAG（Retrieval-Augmented Generation，检索增强生成）是一种让 LLM 能够**基于外部知识库**回答问题的技术架构。
 
@@ -33,7 +33,7 @@ RAG（Retrieval-Augmented Generation，检索增强生成）是一种让 LLM 能
                                             拼接Prompt → LLM生成
 ```
 
-### 1.2 为什么要并行加速？
+###  为什么要并行加速？
 
 在真实场景中：
 
@@ -229,6 +229,3 @@ cmake --build .
 - **Work-Stealing 线程池**：CGraph 动态负载均衡，支持配置延迟/抖动进行基准测试
 - **零死锁设计**：Compute 和 Merge 节点操作不同 Param，不存在同一 mutex 上的 READ-then-WRITE
 
-## License
-
-MIT
