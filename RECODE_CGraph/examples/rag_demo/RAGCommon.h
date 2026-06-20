@@ -1,4 +1,4 @@
-#ifndef RAG_COMMON_H
+﻿#ifndef RAG_COMMON_H
 #define RAG_COMMON_H
 
 #include "../../src/GraphCtrl/GraphInclude.h"
@@ -11,64 +11,22 @@
 #include <cctype>
 
 // ============================================================
-// RAGParam — 整个 Pipeline 中共享的参数
-// Phase 5 扩展：双粒度chunk（大chunk=父段落, 小chunk=索引用）
-// Phase 6 扩展：bm25_results, parent_chunks
-// ============================================================
-struct RAGParam : public GParam {
-    void reset() override {
-        documents.clear();
-        chunks.clear();           // 保留兼容：指向 chunks_small
-        chunks_small.clear();
-        chunks_large.clear();
-        small_to_parent.clear();
-        embeddings.clear();
-        embeddings_small.clear();
-        query.clear();
-        sub_queries.clear();
-        query_embeddings.clear();
-        top_k.clear();
-        fused_results.clear();
-        bm25_results.clear();
-        parent_chunks.clear();
-        answer.clear();
-    }
-
-    // 建库阶段
-    std::vector<std::string> documents;
-    std::vector<std::string> chunks;              // Phase 5 保留兼容 = chunks_small
-    std::vector<std::string> chunks_small;        // 小chunk（索引用，128-256字符）
-    std::vector<std::string> chunks_large;        // 大chunk（父段落，LLM用，512-1024字符）
-    std::vector<int> small_to_parent;             // small[i] → large[small_to_parent[i]]
-    std::vector<std::vector<float>> embeddings;   // 保留兼容 = embeddings_small
-    std::vector<std::vector<float>> embeddings_small; // 小chunk的embedding
-
-    // 查询阶段
-    std::string query;
-    std::vector<std::string> sub_queries;
-    std::vector<std::vector<float>> query_embeddings;
-
-    // 检索结果：每路检索一组 <chunk_index, score>
-    std::vector<std::vector<std::pair<int, float>>> top_k;
-
-    // BM25 检索结果（Phase 6）
-    std::vector<std::pair<int, float>> bm25_results;
-
-    // 融合后的最终 Top-K（small chunk IDs）
-    std::vector<std::pair<int, float>> fused_results;
-
-    // 层次索引（Phase 6）：小chunk → 父段落映射后的结果
-    std::vector<std::pair<int, float>> parent_chunks;
-
-    // 最终回答
-    std::string answer;
-};
-
-// ============================================================
-// 通用工具
+// 细粒度 Param 拆分 — 每个阶段独立 shared_mutex，最大化并行度
+//
+// 阶段对照:
+//   DocParam       — 文档加载+切块
+//   EmbedParam     — 文档向量化
+//   QueryParam     — 查询设置+分解
+//   QueryEmbedParam— 查询向量化
+//   SearchParam    — Dense检索结果
+//   BM25Param      — BM25检索结果
+//   FusionParam    — 融合结果
+//   ParentParam    — 层次映射结果
+//   AnswerParam    — 最终回答
 // ============================================================
 
-// 余弦相似度
+// ===== 工具函数 =====
+
 inline float cosine_similarity(const std::vector<float>& a,
                                const std::vector<float>& b) {
     if (a.size() != b.size() || a.empty()) return 0.0f;
@@ -82,23 +40,6 @@ inline float cosine_similarity(const std::vector<float>& a,
     return dot / (std::sqrt(na) * std::sqrt(nb));
 }
 
-// 按字符分隔符拆分
-inline std::vector<std::string> split_string(const std::string& text,
-                                              char delimiter) {
-    std::vector<std::string> result;
-    size_t start = 0, end;
-    while ((end = text.find(delimiter, start)) != std::string::npos) {
-        auto token = text.substr(start, end - start);
-        if (!token.empty()) result.push_back(token);
-        start = end + 1;
-    }
-    auto last = text.substr(start);
-    if (!last.empty()) result.push_back(last);
-    return result;
-}
-
-// 按字符串分隔符拆分
-// 原地去首尾空白
 inline void trim_inplace(std::string& s) {
     size_t a = 0, b = s.size();
     while (a < b && (s[a]==' '||s[a]=='\t'||s[a]=='\n'||s[a]=='\r')) ++a;
@@ -106,7 +47,6 @@ inline void trim_inplace(std::string& s) {
     s = s.substr(a, b - a);
 }
 
-// 按字符串分隔符拆分
 inline std::vector<std::string> split_by_string(const std::string& text,
                                                  const std::string& sep) {
     std::vector<std::string> result;
@@ -128,8 +68,6 @@ inline std::vector<std::string> split_by_string(const std::string& text,
     return result;
 }
 
-
-// 简单英文分词 + 去停用词（用于 BM25）
 inline std::vector<std::string> tokenize(const std::string& text) {
     std::vector<std::string> tokens;
     std::string cur;
@@ -144,5 +82,103 @@ inline std::vector<std::string> tokenize(const std::string& text) {
     if (cur.size() >= 2) tokens.push_back(cur);
     return tokens;
 }
+
+// ===== 阶段1: 文档加载与切块 =====
+struct DocParam : public GParam {
+    void reset() override {
+        documents.clear();
+        chunks_small.clear();
+        chunks_large.clear();
+        small_to_parent.clear();
+        chunks.clear();
+    }
+    std::vector<std::string> documents;
+    std::vector<std::string> chunks_small;
+    std::vector<std::string> chunks_large;
+    std::vector<int> small_to_parent;
+    std::vector<std::string> chunks;            // 兼容 = chunks_small
+};
+
+// ===== 阶段2: 文档向量化 =====
+struct EmbedParam : public GParam {
+    void reset() override {
+        embeddings.clear();
+        embeddings_small.clear();
+    }
+    std::vector<std::vector<float>> embeddings;
+    std::vector<std::vector<float>> embeddings_small;
+};
+
+// ===== 阶段3: 查询设置 =====
+struct QueryParam : public GParam {
+    void reset() override {
+        query.clear();
+        sub_queries.clear();
+    }
+    std::string query;
+    std::vector<std::string> sub_queries;
+};
+
+// ===== 阶段4: 查询向量化 =====
+struct QueryEmbedParam : public GParam {
+    void reset() override { query_embeddings.clear(); }
+    std::vector<std::vector<float>> query_embeddings;
+};
+
+// ===== 阶段5: Dense检索 =====
+struct SearchParam : public GParam {
+    void reset() override { top_k.clear(); }
+    std::vector<std::vector<std::pair<int, float>>> top_k;
+};
+
+// ===== 阶段6: BM25检索 =====
+struct BM25Param : public GParam {
+    void reset() override { bm25_results.clear(); }
+    std::vector<std::pair<int, float>> bm25_results;
+};
+
+// ===== 阶段7: 融合 =====
+struct FusionParam : public GParam {
+    void reset() override { fused_results.clear(); }
+    std::vector<std::pair<int, float>> fused_results;
+};
+
+// ===== 阶段8: 层次映射 =====
+struct ParentParam : public GParam {
+    void reset() override { parent_chunks.clear(); }
+    std::vector<std::pair<int, float>> parent_chunks;
+};
+
+// ===== 阶段9: 最终回答 =====
+struct AnswerParam : public GParam {
+    void reset() override { answer.clear(); }
+    std::string answer;
+};
+
+// ===== InitNode: 统一创建所有 Param =====
+class InitNode : public GNode {
+public:
+    InitNode() { this->setName("Init"); }
+    CSTATUS init() override {
+        auto st = this->createGParam<DocParam>("doc");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<EmbedParam>("embed");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<QueryParam>("query");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<QueryEmbedParam>("qembed");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<SearchParam>("search");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<BM25Param>("bm25");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<FusionParam>("fusion");
+        if (st != STATUS_OK) return st;
+        st = this->createGParam<ParentParam>("parent");
+        if (st != STATUS_OK) return st;
+        return this->createGParam<AnswerParam>("answer");
+    }
+    CSTATUS run() override { return STATUS_OK; }
+};
 
 #endif

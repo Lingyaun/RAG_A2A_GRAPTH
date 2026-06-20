@@ -1,7 +1,5 @@
-// ============================================================
-// query.cpp — RAG 简单查询入口（Phase 1 基线）
-// DAG: Setup → QueryEmbed → Search → Generator（串行链）
-// ============================================================
+﻿// query.cpp -- simple query entry
+// DAG: Init -> Setup -> QueryEmbed -> Search -> Generator
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -33,13 +31,13 @@ int main(int argc, char* argv[]) {
     }
 
     CGRAPH_ECHO("[RAG] ======== query ========");
-
     // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
-    GElementPtr setup, embed, search, generate;
+    GElementPtr init, setup, embed, search, generate;
 
-    pipeline->registerGElement<QuerySetupNode>(&setup, {}, "Setup");
+    pipeline->registerGElement<InitNode>(&init, {}, "Init");
+    pipeline->registerGElement<QuerySetupNode>(&setup, {init}, "Setup");
     pipeline->registerGElement<EmbedderNode>(&embed, {setup}, "QueryEmbed");
     pipeline->registerGElement<VectorSearchNode>(&search, {embed}, "Search");
     pipeline->registerGElement<LLMGeneratorNode>(&generate, {search}, "Generator");

@@ -1,11 +1,8 @@
-// ============================================================
-// distributed_demo.cpp — 分布式 RAG 架构单进程仿真
+﻿// ============================================================
+// distributed_demo.cpp 鈥?鍒嗗竷寮?RAG 鏋舵瀯鍗曡繘绋嬩豢鐪?//
+// 妯℃嫙: 3 Retriever + 1 Generator A2A 鍒嗗竷寮忛儴缃?// 鍐呴儴: CGraph DAG 骞惰璋冨害鎵€鏈?A2A 璋冪敤
 //
-// 模拟: 3 Retriever + 1 Generator A2A 分布式部署
-// 内部: CGraph DAG 并行调度所有 A2A 调用
-//
-// DAG: Decomposer→3×QE→3×A2A_Retriever(并行)→Fusion→A2A_Generator→答案
-// ============================================================
+// DAG: Decomposer鈫?脳QE鈫?脳A2A_Retriever(骞惰)鈫扚usion鈫扐2A_Generator鈫掔瓟妗?// ============================================================
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -29,7 +26,7 @@
 #include <windows.h>
 #endif
 
-// ---- 模拟 Retriever Agent ----
+// ---- 妯℃嫙 Retriever Agent ----
 struct RetrieverSim {
     std::string name;
     RetrieverSim(const std::string& n) : name(n) {}
@@ -61,7 +58,7 @@ public:
         this->setName("A2A_"+t->name);
     }
     CSTATUS run() override {
-        auto* p=this->getGParam<RAGParam>("rag");
+        auto* p=this->getGParam<AnswerParam>("answer");
         if(!p||!target_) return STATUS_ERR;
         std::vector<float> qv;
         {CGRAPH_PARAM_READ_REGION(p){
@@ -79,7 +76,7 @@ class A2AGeneratorCallNode : public GNode {
 public:
     A2AGeneratorCallNode() { this->setName("A2A_Generator"); }
     CSTATUS run() override {
-        auto* p=this->getGParam<RAGParam>("rag");
+        auto* p=this->getGParam<AnswerParam>("answer");
         if(!p) return STATUS_ERR;
         std::ostringstream ctx; std::string q;
         {CGRAPH_PARAM_READ_REGION(p){

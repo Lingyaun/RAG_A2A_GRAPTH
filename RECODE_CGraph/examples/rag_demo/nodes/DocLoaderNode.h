@@ -1,28 +1,19 @@
-#ifndef RAG_DOCLOADER_NODE_H
+﻿#ifndef RAG_DOCLOADER_NODE_H
 #define RAG_DOCLOADER_NODE_H
 
 #include "../RAGCommon.h"
 #include <fstream>
 #include <sstream>
 
-// ============================================================
-// DocLoaderNode - 文档加载节点
-// 使用方式：注册后通过 setPaths() 设置文件列表
-// ============================================================
 class DocLoaderNode : public GNode {
 public:
     DocLoaderNode() { this->setName("DocLoader"); }
-
     void setPaths(const std::vector<std::string>& p) { paths_ = p; }
 
-    CSTATUS init() override {
-        return this->createGParam<RAGParam>("rag");
-    }
-
     CSTATUS run() override {
-        auto* p = this->getGParam<RAGParam>("rag");
-        if (!p) { CGRAPH_ECHO("[RAG] DocLoader: RAGParam not found"); return STATUS_ERR; }
-        CGRAPH_PARAM_WRITE_REGION(p) {
+        auto* doc = this->getGParam<DocParam>("doc");
+        if (!doc) { CGRAPH_ECHO("[RAG] DocLoader: DocParam not found"); return STATUS_ERR; }
+        CGRAPH_PARAM_WRITE_REGION(doc) {
             for (const auto& path : paths_) {
                 std::ifstream file(path);
                 if (!file.is_open()) {
@@ -30,12 +21,18 @@ public:
                     continue;
                 }
                 std::stringstream buf; buf << file.rdbuf();
-                p->documents.push_back(buf.str());
+                doc->documents.push_back(buf.str());
             }
         }
-        CGRAPH_ECHO("[RAG] DocLoader: loaded %zu docs", p->documents.size());
+        CGRAPH_ECHO("[RAG] DocLoader: loaded %zu docs", doc->documents.size());
         return STATUS_OK;
     }
+
+    CSTATUS init() override {
+        // DocParam 由 InitNode 创建
+        return STATUS_OK;
+    }
+
 private:
     std::vector<std::string> paths_;
 };

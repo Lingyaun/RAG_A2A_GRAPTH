@@ -1,7 +1,5 @@
-// ============================================================
-// build_index.cpp — RAG 建库入口
-// DAG: Loader → Chunker → Embedder（串行链）
-// ============================================================
+﻿// build_index.cpp -- build index entry
+// DAG: Init -> Loader -> Chunker -> Embedder
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -32,23 +30,18 @@ int main(int argc, char* argv[]) {
 
     CGRAPH_ECHO("[RAG] ======== build_index: %zu files ========", file_paths.size());
 
-    // EmbeddingClient: 有 API key 时取消注释，无 key 自动使用 mock embedding
     // EmbedderNode::setEmbeddingClient(std::make_shared<EmbeddingClient>());
 
     GPipelinePtr pipeline = GPipelineFactory::create();
-    GElementPtr loader  = nullptr;
-    GElementPtr chunker = nullptr;
-    GElementPtr embedder = nullptr;
+    GElementPtr init, loader, chunker, embedder;
 
-    // 注册节点
-    pipeline->registerGElement<DocLoaderNode>(&loader, {}, "Loader");
+    pipeline->registerGElement<InitNode>(&init, {}, "Init");
+    pipeline->registerGElement<DocLoaderNode>(&loader, {init}, "Loader");
     pipeline->registerGElement<ChunkerNode>(&chunker, {loader}, "Chunker");
     pipeline->registerGElement<EmbedderNode>(&embedder, {chunker}, "Embedder");
 
-    // 通过 dynamic_cast 设置 DocLoaderNode 的文件路径
     dynamic_cast<DocLoaderNode*>(loader)->setPaths(file_paths);
 
-    // 执行 DAG: init → run → deinit
     pipeline->process();
 
     CGRAPH_ECHO("[RAG] build_index completed.");

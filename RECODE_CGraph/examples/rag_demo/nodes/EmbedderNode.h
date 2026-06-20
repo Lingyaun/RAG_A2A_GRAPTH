@@ -1,4 +1,4 @@
-#ifndef RAG_EMBEDDER_NODE_H
+﻿#ifndef RAG_EMBEDDER_NODE_H
 #define RAG_EMBEDDER_NODE_H
 
 #include "../RAGCommon.h"
@@ -21,36 +21,39 @@ public:
     static bool hasRealEmbedding() { return s_client_ && s_client_->is_configured(); }
 
     CSTATUS run() override {
-        auto* p = this->getGParam<RAGParam>("rag");
-        if (!p) return STATUS_ERR;
-
         if (is_query_mode_) {
-            {  // FIX: scope READ lock
-            CGRAPH_PARAM_READ_REGION(p) {
-                std::string text = (sub_query_index_ >= 0 && sub_query_index_ < (int)p->sub_queries.size())
-                    ? p->sub_queries[sub_query_index_] : p->query;
+            // query mode: DocParam(读) + QueryEmbedParam(写) → 不同锁，无冲突
+            auto* qp = this->getGParam<QueryParam>("query");
+            if (!qp) return STATUS_ERR;
+            CGRAPH_PARAM_READ_REGION(qp) {
+                std::string text = (sub_query_index_ >= 0 && sub_query_index_ < (int)qp->sub_queries.size())
+                    ? qp->sub_queries[sub_query_index_] : qp->query;
                 vcache_ = try_real_embed_single(text);
             }
-            }  // FIX: READ lock released
-            CGRAPH_PARAM_WRITE_REGION(p) {
-                p->query_embeddings.push_back(std::move(vcache_));
+            auto* qep = this->getGParam<QueryEmbedParam>("qembed");
+            if (!qep) return STATUS_ERR;
+            CGRAPH_PARAM_WRITE_REGION(qep) {
+                qep->query_embeddings.push_back(std::move(vcache_));
             }
             CGRAPH_ECHO("[RAG] %s: done (dim=%zu)",
-                this->getName().c_str(), p->query_embeddings.back().size());
+                this->getName().c_str(), qep->query_embeddings.back().size());
         } else {
-            {  // FIX: scope READ lock
-            CGRAPH_PARAM_READ_REGION(p) {
-                auto& src = p->chunks_small.empty() ? p->chunks : p->chunks_small;
+            // doc mode: DocParam(读) + EmbedParam(写) → 不同锁，无冲突
+            auto* dp = this->getGParam<DocParam>("doc");
+            if (!dp) return STATUS_ERR;
+            CGRAPH_PARAM_READ_REGION(dp) {
+                auto& src = dp->chunks_small.empty() ? dp->chunks : dp->chunks_small;
                 bcache_ = try_real_embed_batch(src);
             }
-            }  // FIX: READ lock released
-            CGRAPH_PARAM_WRITE_REGION(p) {
-                p->embeddings = std::move(bcache_);
-                p->embeddings_small = p->embeddings;
+            auto* ep = this->getGParam<EmbedParam>("embed");
+            if (!ep) return STATUS_ERR;
+            CGRAPH_PARAM_WRITE_REGION(ep) {
+                ep->embeddings = std::move(bcache_);
+                ep->embeddings_small = ep->embeddings;
             }
             CGRAPH_ECHO("[RAG] DocEmbed: %zu vectors (dim=%zu)",
-                p->embeddings.size(),
-                p->embeddings.empty() ? 0 : p->embeddings[0].size());
+                ep->embeddings.size(),
+                ep->embeddings.empty() ? 0 : ep->embeddings[0].size());
         }
         return STATUS_OK;
     }

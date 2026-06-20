@@ -1,10 +1,8 @@
-// ============================================================
-// query_parallel.cpp — 并行 RAG 查询（Phase 2 核心）
-//
-// DAG: Loader→Chunker→DocEmbed→Setup→Decomposer
-//      → 4×QE(并行) → 8×Search(并行) → 2×Rerank(并行) → Generator
-// 共 17 个节点，5 层并行窗口
-// ============================================================
+﻿// ============================================================
+// query_parallel.cpp 鈥?骞惰 RAG 鏌ヨ锛圥hase 2 鏍稿績锛?//
+// DAG: Loader鈫扖hunker鈫扗ocEmbed鈫扴etup鈫扗ecomposer
+//      鈫?4脳QE(骞惰) 鈫?8脳Search(骞惰) 鈫?2脳Rerank(骞惰) 鈫?Generator
+// 鍏?17 涓妭鐐癸紝5 灞傚苟琛岀獥鍙?// ============================================================
 
 #include "../../src/GraphCtrl/GraphInclude.h"
 #include "RAGCommon.h"
@@ -55,9 +53,9 @@ int main(int argc, char* argv[]) {
 
     GPipelinePtr pipeline = GPipelineFactory::create();
 
-    // ====== Layer 1: 建库 + 设置查询 + 分解 ======
-    GElementPtr loader, chunker, doc_embed, setup, decomposer;
-    pipeline->registerGElement<DocLoaderNode>(&loader, {}, "DocLoader");
+    // ====== Layer 1: 寤哄簱 + 璁剧疆鏌ヨ + 鍒嗚В ======
+    GElementPtr init, loader, chunker, doc_embed, setup, decomposer;
+    pipeline->registerGElement<InitNode>(&init, {}, "Init"); pipeline->registerGElement<DocLoaderNode>(&loader, {init}, "DocLoader");
     pipeline->registerGElement<ChunkerNode>(&chunker, {loader}, "Chunker");
     pipeline->registerGElement<EmbedderNode>(&doc_embed, {chunker}, "DocEmbedder");
     pipeline->registerGElement<QuerySetupNode>(&setup, {doc_embed}, "QuerySetup");
@@ -66,7 +64,7 @@ int main(int argc, char* argv[]) {
     dynamic_cast<DocLoaderNode*>(loader)->setPaths(file_paths);
     dynamic_cast<QuerySetupNode*>(setup)->setQuery(question);
 
-    // ====== Layer 2: 4路并行 Embedding ======
+    // ====== Layer 2: 4璺苟琛?Embedding ======
     GElementPtr qe0, qe1, qe2, qe3;
     pipeline->registerGElement<EmbedderNode>(&qe0, {decomposer}, "QE_SQ0");
     pipeline->registerGElement<EmbedderNode>(&qe1, {decomposer}, "QE_SQ1");
@@ -82,7 +80,7 @@ int main(int argc, char* argv[]) {
     dynamic_cast<EmbedderNode*>(qe3)->setQueryMode(true);
     dynamic_cast<EmbedderNode*>(qe3)->setSubQueryIndex(3);
 
-    // ====== Layer 3: 8路并行检索 ======
+    // ====== Layer 3: 8璺苟琛屾绱?======
     GElementPtr s0a, s0b, s1a, s1b, s2a, s2b, s3a, s3b;
     pipeline->registerGElement<VectorSearchNode>(&s0a, {qe0}, "S0A");
     pipeline->registerGElement<VectorSearchNode>(&s0b, {qe0}, "S0B");
@@ -102,16 +100,16 @@ int main(int argc, char* argv[]) {
     dynamic_cast<VectorSearchNode*>(s3a)->configure(10, 0, 2, 3);
     dynamic_cast<VectorSearchNode*>(s3b)->configure(10, 1, 2, 3);
 
-    // ====== Layer 4: 2路并行融合 ======
+    // ====== Layer 4: 2璺苟琛岃瀺鍚?======
     GElementPtr rerank_01, rerank_23;
     pipeline->registerGElement<FusionRerankerNode>(&rerank_01, {s0a, s0b, s1a, s1b}, "Rerank_01");
     pipeline->registerGElement<FusionRerankerNode>(&rerank_23, {s2a, s2b, s3a, s3b}, "Rerank_23");
 
-    // ====== Layer 5: 生成 ======
+    // ====== Layer 5: 鐢熸垚 ======
     GElementPtr generator;
     pipeline->registerGElement<LLMGeneratorNode>(&generator, {rerank_01, rerank_23}, "Generator");
 
-    // ====== 执行 ======
+    // ====== 鎵ц ======
     CGRAPH_ECHO("[RAG] DAG ready: 17 nodes, 5 layers. Starting...");
     pipeline->process();
     CGRAPH_ECHO("[RAG] Parallel RAG completed.");

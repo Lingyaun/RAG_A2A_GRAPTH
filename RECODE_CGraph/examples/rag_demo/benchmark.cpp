@@ -71,8 +71,8 @@ public:
 // ---- Serial ----
 double run_serial(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr l,c,de,s,qe,sh,g;
-    pl->registerGElement<DocLoaderNode>(&l,{},"L");
+    GElementPtr init,l,c,de,s,qe,sh,g;
+    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
     pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
     pl->registerGElement<QuerySetupNode>(&s,{de},"S");
@@ -89,8 +89,8 @@ double run_serial(const std::vector<std::string>& files, const std::string& q){
 // ---- Parallel ----
 double run_parallel(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr l,c,de,s,dc;
-    pl->registerGElement<DocLoaderNode>(&l,{},"L");
+    GElementPtr init,l,c,de,s,dc;
+    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
     pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
     pl->registerGElement<QuerySetupNode>(&s,{de},"S");
@@ -122,8 +122,8 @@ double run_parallel(const std::vector<std::string>& files, const std::string& q)
 // ---- Hierarchical (Phase 6) ----
 double run_hierarchical(const std::vector<std::string>& files, const std::string& q){
     GPipelinePtr pl=GPipelineFactory::create();
-    GElementPtr l,c,de,s,dc;
-    pl->registerGElement<DocLoaderNode>(&l,{},"L");
+    GElementPtr init,l,c,de,s,dc;
+    pl->registerGElement<InitNode>(&init,{},"Init"); pl->registerGElement<DocLoaderNode>(&l,{init},"L");
     pl->registerGElement<ChunkerNode>(&c,{l},"C");
     pl->registerGElement<SlowEmbedderNode>(&de,{c},"DE");
     pl->registerGElement<QuerySetupNode>(&s,{de},"S");

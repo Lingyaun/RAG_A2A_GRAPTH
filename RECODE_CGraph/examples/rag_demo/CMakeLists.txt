@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+﻿cmake_minimum_required(VERSION 3.10)
 project(RAGDemo LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -12,13 +12,13 @@ add_executable(query query.cpp ${CGRAPH_SRC})
 add_executable(demo demo.cpp ${CGRAPH_SRC})
 add_executable(query_parallel query_parallel.cpp ${CGRAPH_SRC})
 add_executable(benchmark benchmark.cpp ${CGRAPH_SRC})
-add_executable(distributed_demo distributed_demo.cpp ${CGRAPH_SRC})
+#add_executable( .cpp ${CGRAPH_SRC})  # TODO: update for split Params
 add_executable(query_hierarchical query_hierarchical.cpp ${CGRAPH_SRC})
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-set(TARGETS build_index query demo query_parallel benchmark distributed_demo query_hierarchical)
+set(TARGETS build_index query demo query_parallel benchmark query_hierarchical)
 foreach(tgt ${TARGETS})
     target_link_libraries(${tgt} Threads::Threads)
 endforeach()
