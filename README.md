@@ -1,7 +1,16 @@
-﻿# RAG Pipeline — 基于 CGraph + A2A 的并行检索增强生成系统
+# RAG Pipeline — 基于 CGraph DAG + A2A引擎的并行检索增强生成系统
 
-基于 [CGraph](https://github.com/ChunelFeng/CGraph) DAG 计算引擎与 A2A（Agent-to-Agent）协议构建的高性能 C++ RAG（Retrieval-Augmented Generation）系统。
-### 1.1 什么是 RAG？
+基于 [CGraph](https://github.com/ChunelFeng/CGraph) DAG 计算引擎构建的高性能 C++ RAG（Retrieval-Augmented Generation）系统。
+
+> **现状说明**：CGraph 使用了个人仿写学习的 [RECODE_CGraph](https://github.com/Lingyaun/RECODE_CGraph)。目前该项目已计划废弃——真正的性能消耗在 Embedding API 的 IO 延迟和 LLM API 的响应延迟上，C++ 算完也得等响应（除非 Python 算不完或远超响应时间）。C++ 对比 Python 在纯 RAG 场景下没有明显优势，除非有 ONNX 本地 Embedding、本地精排和本地 LLM 推理。但在什么场景下需要这么快的 CPU 响应？除非科技腾飞了 CPU 也要部署模型、也要用 RAG 和多智能体协作。（正好此仿写也只支持 CPU 不支持 GPU。）
+
+> **坦诚说明**：以下纯当架构演示——
+> - 无向量数据库，纯内存存储
+> - 余弦相似度 O(N·D) 暴力遍历，无近似索引（HNSW/IVF）
+> - CrossEncoder 为硬编码权重 `0.7 * old_score + 0.3 * jaccard`，无模型推理
+> - 未做检索精度评估（MRR / Recall@5 / NDCG）
+> - 作者纯用来学习RAG设计思路
+### 什么是 RAG？
 
 RAG（Retrieval-Augmented Generation，检索增强生成）是一种让 LLM 能够**基于外部知识库**回答问题的技术架构。
 
@@ -33,7 +42,7 @@ RAG（Retrieval-Augmented Generation，检索增强生成）是一种让 LLM 能
                                             拼接Prompt → LLM生成
 ```
 
-### 1.2 为什么要并行加速？
+### 为什么要并行加速？
 
 在真实场景中：
 
@@ -120,38 +129,38 @@ SearchMergeNode   （读中间缓冲区         -> 写 SearchParam）
 ## 项目结构
 
 ```
-RAG/
-├── RECODE_CGraph/               # CGraph DAG 引擎
-│   ├── examples/rag_demo/
-│       ├── nodes/               # RAG 节点实现
-│       │   ├── DocLoaderNode.h      # 文档加载
-│       │   ├── ChunkerNode.h        # 递归语义切块 + 双粒度输出
-│       │   ├── EmbedderNode.h       # EmbedCompute/Merge + QEmbedCompute/Merge
-│       │   ├── VectorSearchNode.h   # SearchCompute/Merge（稠密检索）
-│       │   ├── BM25Node.h           # BM25Compute/Merge（稀疏检索）
-│       │   ├── FusionRerankerNode.h # FusionCompute/Merge（混合融合）
-│       │   ├── ParentLookupNode.h   # ParentCompute/Merge（层次索引）
-│       │   ├── CrossEncoderNode.h   # CECompute/Merge（精排）
-│       │   ├── LLMGeneratorNode.h   # PromptBuild/AnswerMerge（生成）
-│       │   ├── QuerySetupNode.h     # 查询设置
-│       │   └── QueryDecomposerNode.h# 查询分解
-│       ├── demo.cpp              # 简单建库+查询
-│       ├── query.cpp             # 纯查询入口
-│       ├── build_index.cpp       # 纯建库入口
-│       ├── query_parallel.cpp    # 并行RAG（~25节点，5层）
-│       ├── query_hierarchical.cpp# 完整层次RAG（~40节点，8层）
-│       ├── benchmark.cpp         # 性能基准测试（Serial/Parallel/Hierarchical）
-│       ├── RAGCommon.h           # Param定义 + 工具函数 + InitNode
-│       └── CMakeLists.txt
-│   └── test_docs/                # 测试文档
-├── a2a-cpp-sdk-main/            # A2A 协议 C++ SDK
-│   └── examples/distributed_demo # 分布式多Agent RAG
-└── .knowledge/                   # 设计文档（不对外）
+RECODE_CGraph/
+├── src/                         # CGraph DAG 引擎源码
+├── examples/rag_demo/
+│   ├── nodes/                   # RAG 节点实现
+│   │   ├── DocLoaderNode.h      # 文档加载
+│   │   ├── ChunkerNode.h        # 递归语义切块 + 双粒度输出
+│   │   ├── EmbedderNode.h       # Embedding Compute/Merge 节点对
+│   │   ├── EmbeddingClient.h    # DashScope Embedding API 客户端
+│   │   ├── VectorSearchNode.h   # Dense 检索 Compute/Merge
+│   │   ├── BM25Node.h           # BM25 检索 Compute/Merge
+│   │   ├── FusionRerankerNode.h # 混合融合 Compute/Merge
+│   │   ├── ParentLookupNode.h   # 层次索引 Compute/Merge
+│   │   ├── CrossEncoderNode.h   # CrossEncoder 精排 Compute/Merge
+│   │   ├── LLMGeneratorNode.h   # Prompt 构建 + 回答合并
+│   │   ├── QuerySetupNode.h     # 查询设置
+│   │   └── QueryDecomposerNode.h# 查询分解
+│   ├── demo.cpp                 # 简单建库+查询
+│   ├── query.cpp                # 纯查询入口
+│   ├── build_index.cpp          # 纯建库入口
+│   ├── query_parallel.cpp       # 并行 RAG
+│   ├── query_hierarchical.cpp   # 完整层次 RAG（~40节点，8层DAG）
+│   ├── benchmark.cpp            # 性能基准测试
+│   ├── distributed_demo.cpp     # 分布式多 Agent RAG（概念演示）
+│   ├── RAGCommon.h              # 9 个 Param 定义 + 工具函数 + InitNode
+│   ├── CMakeLists.txt
+│   └── third_party/             # 第三方头文件（curl、nlohmann/json）
+└── test_docs/                   # 测试文档
 ```
 
 ## 节点清单
 
-### 单操作节点（已完成细粒度化）
+### 单操作节点
 - **DocLoaderNode** — 读文件 -> 写 `DocParam.documents`
 - **ChunkerNode** — 读文档 -> 递归语义切分 -> 写 `chunks_small/large` + `small_to_parent` 映射
 - **QuerySetupNode** — 写 `QueryParam.query`
@@ -172,19 +181,21 @@ RAG/
 
 ### 基础设施
 - **InitNode** — 在 pipeline 初始化时创建全部 9 个 Param
+- **EmbeddingClient** — DashScope Text Embedding API 客户端（libcurl + nlohmann/json），支持批量向量化，无 API key 时自动回退 mock
 
 ## 编译
 
 ### 环境要求
 - C++17 编译器（GCC 8+ / Clang 7+ / MSVC 2019+）
 - CMake 3.14+
+- libcurl（Windows MinGW 需安装 `mingw-w64-x86_64-curl`）
 
 ### 编译全部目标
 
 ```bash
 cd RECODE_CGraph/examples/rag_demo/build
-cmake ..
-cmake --build .
+cmake -S .. -B . -G "MinGW Makefiles"   # 或用 Unix Makefiles / Ninja
+cmake --build . -j4
 ```
 
 产出 6 个可执行文件：`demo.exe`、`query.exe`、`build_index.exe`、`query_parallel.exe`、`query_hierarchical.exe`、`benchmark.exe`。
@@ -222,13 +233,10 @@ cmake --build .
 ## 核心技术特点
 
 - **细粒度 DAG 节点**：每个节点只做一件事（读/计算/写），依赖关系精确，并行度最大化
-- **拆分 Param 体系**：9 个独立 Param 各自持有 `shared_mutex`，不同检索阶段零锁竞争
+- **拆分 Param 体系**：9 个独立 Param 各自持有 `shared_mutex`，不同检索阶段锁竞争最小化
+- **Compute/Merge 分离**：计算节点持读锁做运算，合并节点持写锁做搬运——避免持锁期间做 IO/计算
 - **混合检索**：BM25（稀疏关键词）+ Dense（余弦相似度）加权融合，alpha 可配置（默认 0.7）
 - **层次索引**：小chunk精准检索 + 父段落完整上下文，O(1) 映射表零开销
 - **多级漏斗**：粗召回(200) -> 语义筛选(50) -> 精排(5)，兼顾速度与精度
 - **Work-Stealing 线程池**：CGraph 动态负载均衡，支持配置延迟/抖动进行基准测试
-- **零死锁设计**：Compute 和 Merge 节点操作不同 Param，不存在同一 mutex 上的 READ-then-WRITE
-
-## License
-
-MIT
+- **真实 API 接入**：Embedding 接入 DashScope API（1536 维），无 API key 时自动回退确定性 mock
